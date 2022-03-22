@@ -1,0 +1,947 @@
+const { me, ono, mongo } = require('./config.json');
+const sender = require('./helpers/message-sender.js');
+const confirm = require('./helpers/confirm-component.js');
+const Sequelize = require('sequelize');
+const types = require('discord-api-types/v9');
+const { CronJob } = require('cron');
+let roles = require('./roles.json');
+const { Collection } = require('discord.js');
+let game;
+
+module.exports = async (index) => {
+  
+
+  new CronJob(`00 */30 * * * *`, () => { saveGame() }, () => console.log('Game saved!'), false, 'America/New_York').start();
+
+  index.btnHandler.add('tt join', e => {
+    e.clicker.fetch().then(_ => game.addPlayer(e.clicker.user, e.channel));
+  });
+
+  const saveGame = async () => {
+    // save the game state
+    // TODO: this is unoptimised as it saves *everything* about the current game state. While it's comprehensive and ensures all required information is retained,
+    //       it also takes the time to save and load information that could be inferred. So, quick and sloppy but gets the job done.
+    await db.set('savedGame', game);
+    // save the log of the game to the database
+    let log = await db.get('log');
+    const now = new Date();
+    let today = log[`${now.getMonth()}/${now.getDay()}`];
+    if(!today) today = [];
+    game.cachedLog.forEach(entry => {
+      today.push(entry);
+    });
+    await db.set('log', log);
+    // save the current command states
+    await db.set('commands', commands);
+    // save the current question states
+    await db.set('questions', questions);
+  }
+
+  const unlockBarriers = () => {
+    const b = commands.get('barrier');
+    b.unlocked = true;
+    b.display = true;
+    const r = commands.get('reinforce');
+    r.unlocked = true;
+    r.display = true;
+
+    game.log('Barriers have been unlocked!', '')
+  }
+  let commands = new Collection();
+  commands.set('help', {
+    description: 'Get help.',
+    display: false,
+    requiresStart: false,
+    action: (m, args) => {
+      let message = 'TankTactic commands:'
+      for(c of commands) {
+        if(c[1].display) {
+          message += `\n\t\`${c[0]}\`${c[1].cost !== undefined ? ` - ${c[1].cost} AP` : ''} - ${c[1].description}`;
+        }
+      }
+
+      m.channel.send(message);
+    }
+  });
+
+  // player moves
+  commands.set('move', {
+    description: 'Move your tank to another position on the board. Use Letter Number (i.e. B3)',
+    display: true,
+    requiresStart: true,
+    cost: 1,
+    action(message, args) {
+      
+
+      
+    }
+  });
+  commands.set('shoot', {
+    description: 'shoot your ||               || at a tile in range. User LetterNumber format (i.e. B3)',
+    display: true,
+    requiresStart: true,
+    cost: 1,
+    action(message, args) {
+      if(!args[0]) {
+        message.channel.send('You didn\'t specify a location.');
+        return;
+      }
+      const player = game.resolvePlayer(message.author);
+      if(player.ap < this.cost) {
+        message.channel.send(`Sorry, but you don't have enough AP to perform this action.`);
+        return;
+      }
+      
+      let original = args[0];
+      let parsed = parseLoc(message.channel, original);
+      if(parsed) {
+        confirm(message.channel, `You are going to Shoot at ${original}. Is this correct? (y/n)`).then(result => {
+          if(result) {
+            const r = game.shoot(player.tank, parsed);
+            if(r.success) {
+              if(message.channel.type === 'dm') {
+                message.channel.send(`Your shot has been fired!`);
+                game.announce(`${player}` + r.message, 'playerEvent');
+              } else {
+                game.announce('A player ' + r.message, 'playerEvent');
+              }
+            }
+          } else {
+            message.channel.send(`No worries, we don't do that then.`);
+          }
+        }).catch(err => {
+          console.error(err);
+          message.channel.send(`I'm so sorry, something went wrong while confirming and I have to abort the command. Try again.`);
+        });
+      }
+    }
+  });
+  commands.set('upgrade', {
+    description: 'Upgrade your stat! Use `upgrade range` to increase your range!',
+    requiresStart: true,
+    cost: 1,
+    potency: 1,
+    display: true,
+    action(message, args) {
+      if(!args[0]) {
+        if(game.hasUpDamage) {
+          message.channel.send(`Well, I can't upgrade anything if you don't tell me what you want upgraded`);
+          return;
+        } else {
+          args[0] = 'range';
+        }
+      }
+      const player = game.resolvePlayer(message.author);
+      switch(args[0]) {
+        case 'range':
+          if(player.ap >= this.cost) {
+            confirm(message.channel, 'Upgrading your range will cost you 1 AP. Is this ok? (y/n)').then(result => {
+              if(result) {
+                player.tank.range += 1 * this.potency;
+                message.channel.send(`Awesome! Your range is now ${player.tank.range}`);
+                game.log('A player upgraded their range.', 'playerEvent');
+              } else {
+                message.channel.send(`That's alright, we can do something else.`);
+              }
+            }).catch(err => {
+              console.log(err);
+            });
+          } else {
+            message.channel.send(`You don't have enough AP for that action`);
+          }
+          break;
+        case 'damage':
+          if(!game.hasUpDamage) {
+            game.hasUpDamage = true;
+            message.channel.send(`wait... you want me to upgrade... your damage? H- hold on...`);
+            message.channel.startTyping();
+            game.log('Goatboy enters the archives...', 'unlocked');
+            game.scheduler.scheduleTask('check archive', 'in 20 seconds', async () => {
+              message.channel.stopTyping();
+              await new Promise(r => setTimeout(r, 2000));
+              message.channel.send('Ok, ok, there is something here!');
+              message.channel.startTyping();
+              await new Promise(r => setTimeout(r, 5000));
+              message.channel.stopTyping();
+              message.channel.send('Yeah, yeah, you are totally, right, I can do that! The cost is pretty steep though, 3 AP.');
+              sender.sendDM(message.client.users.resolve(me), 'Unredact Damage Upgrade in the book');
+              game.log('The archives come to life.', 'unlocked');
+              await new Promise(r => setTimeout(r, 500));
+              message.channel.send(`Ah, what the heck, I'm in control here. Don't tell anyone, but I'll give you it free, just this time. For finding it!`);
+              await new Promise(r => setTimeout(r, 500));
+              message.channel.send(`Or, I suppose you could give this to another player, but that's entirely up to you. No one is truly your friend in this game, afterall.`);
+              confirm(message.channel, 'Would you like to give this upgrade to another player? (y/n)').then(result => {
+                if(result) {
+                  message.channel.send(`You are nicer than I... Well actually I'm the one giving you the free upgrade, so that's debatable. Either way, hope this doesn't come back to bite you!`);
+                  message.channel.send(`Now, who would you like to give this upgrade?`);
+                  message.channel.awaitMessages(
+                    m => game.players.some(p => p.emoji === m.content),
+                    { max: 1, time: 3.6e+6, errors: ['time'] }
+                  ).then(collected => {
+                    const target = game.players.find(p => p.emoji === collected.first().content);
+                    target.tank.damage += 0.2;
+                    message.channel.send(`Very well. ${target}'s damage is now ${target.tank.damage}.`);
+                    game.log(`${target}'s damage has increased to ${target.tank.damage}!`, 'playerEvent');
+                  }).catch(err => {
+                    message.channel.send(`oh. you havent responded. thats ok. bye, i guess...`);
+                    player.divineFavor -= 2;
+                  });
+                } else {
+                  player.tank.damage += 0.2;
+                  message.channel.send(`Wise choice. I can't help but feel this makes you a target, though. Oh well. Your damage is now ${player.tank.damage}`);
+                  game.log(`${players}'s damage has increased to ${target.tank.damage}`, 'playerEvent');
+                }
+              });
+            })
+          } else {
+            if(player.ap >= 3) {
+              confirm(message.channel, 'Upgrading your damage will cost you 3 AP. Is this ok? (y/n)').then(result => {
+                if(result) {
+                  player.tank.damage += 0.2 * this.potency;
+                  message.channel.send(`Your damage has been upgraded to ${player.tank.damage}`);
+                  game.log('A player has upgraded their Damage.', 'playerEvent');
+                }
+              });
+            }
+          }
+          break;
+        case 'hearts':
+          message.channel.send('You want me to upgrade... your Hearts? No, I don\' think I can do that.');
+          break;
+      }
+    }
+  });
+  commands.set('gift', {
+    description: 'Shoot an AP at a tile. It deals no damage, but if anyone occupies that tile they will gain the AP',
+    display: true,
+    requiresStart: true,
+    cost: 1,
+    action: (message, args) => {
+      if(!args[0]) {
+        message.channel.send(`You didn't specify a location.`);
+        return;
+      }
+
+      const player = game.resolvePlayer(message.author);
+      if(player.ap < 1) {
+        message.channel.send(`You don't have sufficient AP to perform this action.`);
+        return;
+      }
+
+      let original = args[0];
+      let parsed = parseLoc(message.channel, original);
+      if(parsed) {
+        const result = game.gift(player.tank, parsed);
+        if(result.success) {
+          if(message.channel.type === 'dm') {
+            message.channel.send(`You have successfully launched an AP onto the board!`);
+          }
+          game.announce(result.message, 'playerEvent');
+        } else {
+          switch(result.reason) {
+            case 'out of range':
+              message.channel.send(`${original} is out of your range.`);
+              break;
+            case 'insufficient ap':
+              message.channel.send(`You don't have sufficient AP to perform this action.`);
+              break;
+          }
+        }
+      }
+    }
+  });
+  commands.set('load', {
+    description: 'Load a special type of round into your tank',
+    requiresAlive: true,
+    requiresStart: false,
+    cost: 1,
+    used: [],
+    deadlock: false,
+    unlocked: null,
+    async action(message, args) {
+      const player = game.resolvePlayer(message.author);
+      if(deadlock) message.channel.send(`Haha. Funny. Go talk to ${this.unlocked}. They beat you to it. See you tomorrow.`);
+      if(!game.hasSpecialAmmo) {
+        if(used.includes(message.author.id)) {
+          message.channel.send('I thought I told you not to use this command again.');
+          if(player.divineRoll()) {
+            this.deadlock = true;
+            this.unlocked = player;
+            this.used = {};
+            game.log('The gears begin turning.', 'mechanism');
+            game.scheduler.scheduleTask('check for ammo', 'in 3 minutes 21 seconds', async _ => {
+              game.log('The gears spin faster.', 'mechanism');
+              message.channel.send('You win.');
+              await new Promise(r => setTimeout(r, 600));
+              message.channel.send('I hope you know what you are getting yourself into. See you tomorrow.');
+              game.log('For but a moment, team hisses as pistons pulse.', 'mechanism');
+
+              game.scheduleElection(`Thanks to ${player}, I've got some, exciting news for you all. We are having an election. Here is your voting slip. Think about this carefully.`,
+                true,
+                () => {
+                  game.log('Loud metal clanks.', 'mechanism');
+                }),
+                (results) => {
+                  this.primaryChannel.send(`The election is over. The votes have been tallied. I didn't tell you, but the archives dictate this election works a little different. Every bill passes. Don't shoot your eye out.`);
+                  if(game.loggingChannel) {
+                    for(let [key, value] of game.currentElection.currentBills) {
+                      value.voters.forEach(p => {
+                        switch(key) {
+                          case 'explosive':
+                            p.hasExplosive = true;
+                            game.log(`${p} has received access to Explosive Rounds.`, 'election');
+                            break;
+                          case 'piercing':
+                            p.hasPiercing = true;
+                            game.log(`${p} has received access to Piercing Rounds.`, 'election');
+                            break;
+                          case 'bouncing':
+                            p.hasBouncing = true;
+                            game.log(`${p} has received access to Bouncing Rounds.`, 'election');
+                            break;
+                        }
+                      })
+                    }
+                  } else {
+                    for(let [key, value] of game.currentElection.currentBills) {
+                      value.voters.forEach(p => {
+                        switch(key) {
+                          case 'explosive':
+                            p.hasExplosive = true;
+                            sender.sendDM(p.author, `You have received access to Explosive Rounds.`);
+                            break;
+                          case 'piercing':
+                            p.hasPiercing = true;
+                            sender.sendDM(p.author, `You have received access to Piercing Rounds.`)
+                            break;
+                          case 'bouncing':
+                            p.hasBouncing = true;
+                            sender.sendDM(p.author, `You have received access to Bouncing Rounds.`)
+                            break;
+                        }
+                      })
+                    }
+                  }
+                },
+                {
+                  id: 'explosive',
+                  name: 'Explosive Round',
+                  description: 'Allow access to exploding rounds. Load this into your tank, and the next time you shoot will be *real* exciting.',
+                  color: '#BE5B2D',
+                },
+                {
+                  id: 'piercing',
+                  name: 'Piercing Round',
+                  description: 'Allow access to piercing rounds. Load this into your tank, and the next time you shoot, nothing will stand in your way. Well, they can try, I suppose.',
+                  color: '#AFAFAF',
+                },
+                {
+                  id: 'bouncing',
+                  name: 'Bounding Round',
+                  description: 'Allow access to bouncing rounds. Load this into your tank, and your opponents better hope they aren\'t standing too close together.',
+                  color: '#7AC6E4',
+                }
+            });
+          } else {
+            game.log('The gears shift. Metal grinds. Everything remains still.', 'mechanism');
+          }
+        } else {
+          used.push(message.author.id);
+          message.channel.send('H-');
+          message.channel.send('How did you know about this command?');
+          if(player.divineRoll()) {
+            this.deadlock = true;
+            this.unlocked = player;
+            await new Promise(r => setTimeout(r, 800));
+            message.channel.send(`I'm really not happy you asked me to do this. But I have a job. So. I'll see you tomorrow.`)
+          } else {
+            message.channel.startTyping();
+            await new Promise(r => setTimeout(r, 1200));
+            message.channel.stopTyping();
+            message.channel.send('Hey, listen, I like you, ok? I like all of you! So, don\'t do that again. Forget I said anything. I\'m sorry.');
+          }
+        }
+      } else {
+        switch(args[0].toLowerCase().trim()) {
+          case 'explosive':
+          case 'exp':
+          case 'ex':
+          case 'e':
+          case 'exploding':
+            if(!player.hasExplosive) {
+              if(player.divineRoll(-Math.floor(player.divineFavor / 2))) {
+                message.channel.send('⚙ The machinery responds to your request. An explosive round is loaded into the chamber.');
+              }
+            }
+            break;
+        }
+      }
+    }
+  });
+  commands.set('barrier', {
+    description: 'Place a barrier on an adjacent tile',
+    display: false,
+    requiresStart: true,
+    requiresAlive: true,
+    cost: 1,
+    unlocked: false,
+    async action(message, args) {
+      if(this.unlocked) {
+        const loc = parseLoc(message.channel, args[0]);
+        if(loc) {
+          const player = game.resolvePlayer(message.author)
+          const result = game.playerBarrier(player, loc);
+          if(result.success) {
+            message.channel.send(`You've successfully placed a barrier at ${args[0]}.`);
+            let logString = `${player} placed a barrier at ${args[0]}.`;
+            if(result.target.pickups) {
+              result.target.pickups.forEach(p => logString += `\n${p} was locked behind the barrier!`);
+            }
+            game.log(logString, 'playerEvent');
+            game.updateBoardMessage();
+          } else {
+            switch(result.reason) {
+              case 'out of range':
+                message.channel.send('You can only place a barrier on an adjacent tile.');
+                break;
+              case 'tile occupied':
+                message.channel.send('You cannot place a barrier on an occupied tile.');
+                break;
+              default:
+                message.channel.send('There was a problem placing the barrier.');
+                break;
+            }
+          }
+        }
+      }
+    }
+  });
+  commands.set('reinforce', {
+    description: 'Reinforce a barrier on an adjacent tile',
+    display: false,
+    requiresStart: true,
+    requiresAlive: true,
+    cost: 1,
+    unlocked: false,
+    async action(message, args) {
+      if(this.unlocked) {
+        const loc = parseLoc(message.channel, args[0]);
+        if(loc) {
+          const player = game.resolvePlayer(message.author);
+          const result = game.reinforceBarrier(player, loc);
+          if(result.success) {
+            message.channel.send(`You've successfully reinforced a barrier at ${args[0]}.`);
+            game.log(`${player} reinforced the barrier at ${args[0]}!`, 'playerEvent');
+            game.updateBoardMessage();
+          } else {
+            switch(result.reason) {
+              case 'out of range':
+                message.channel.send('You can only reinforce a barrier on an adjacent tile.');
+                break;
+              case 'target not a barrier':
+                message.channel.send(`There is not a barrier at ${args[0]}.`);
+                break;
+              case 'barrier already reinforced':
+                message.channel.send('This barrier has already been reinforced. A barrier can only be reinforced once.');
+                break;
+              default:
+                message.channel.send('Something went wrong reinforcing the barrier.');
+                break;
+            }
+          }
+        }
+      }
+    }
+  });
+  commands.set('vote', {
+    description: 'Use a voting slip to vote on an ongoing election. vote <bill name>',
+    display: true,
+    requiresStart: true,
+    action: (message, args) => {
+      if(!args[0]) {
+        message.channel.send('You must specify the bill you wish to vote on');
+        return;
+      }
+
+      const player = game.resolvePlayer(message.author);
+      if(!player.votingSlips.length) {
+        message.channel.send(`I'm sorry, but you need a Voting Slip to vote in an Election.`);
+        return;
+      }
+
+      let bill = args.join(' ').toLowerCase();
+      confirm(message.channel, `You are submiting a vote for "${bill}". Is this correct? (y/n)`).then(result => {
+        if(result) {
+          const player = game.resolvePlayer(message.author);
+          const slip = player.votingSlips.shift();
+          slip.value = bill;
+          game.vote(slip);
+        }
+      }).then(_ => {
+        if(message.channel.type === 'dm') {
+          confirm(message.channel, `Would you like your vote to be anonymous? (y/n)`).then(result => {
+            if(result) {
+              message.channel.send(`Your vote has been successfully submitted and the announcement will be anonymous. Thank you for your participation.`);
+              game.announce(`A player has submitted a voting slip.`);
+              game.log(`${game.elections.currentElection.totalVotes} Votes have been counted.`, 'election');
+            } else {
+              message.channel.send(`Your vote has been successfully submitted and the announcement will mention you. Thank you for your participation.`);
+              if(player.alive) {
+                game.announce(`${player} has submitted a voting slip.`);
+              } else {
+                game.announce(`A player has submitted a voting slip.`);
+              }
+              game.log(`${game.elections.currentElection.totalVotes} Votes have been counted.`, 'election');
+            }
+          });
+        }
+        
+      })
+    }
+  });
+  commands.set('board', {
+    description: 'Get the current state of the board.',
+    requiresStart: true,
+    cost: 0,
+    action: (message, args) => {
+      game.displayBoard(message.channel);
+    }
+  });
+
+  // admin commands
+  commands.set('log', {
+    description: 'start logging game events to this channel',
+    display: false,
+    requiresStart: false,
+    action: (message, args) => {
+      if(message.author.id !== me) return;
+
+      game.loggingChannel = message.channel;
+      game.loggingChannel.send('I will now log game events to this channel! Game events will also still be reported to <#' + game.primaryChannel + '> as they happen');
+    }
+  });
+  commands.set('boardChannel', {
+    description: 'Set this as the board channel',
+    display: false,
+    requiresStart: false,
+    action: (message, args) => {
+      if(message.author.id !== me) return;
+      if(args[0]) {
+        if(args[0] === 'update') {
+          game.updateBoardMessage();
+        }
+      } else {
+        game.boardChannel = message.channel;
+        game.boardChannel.send('Board updates will be reflected in this channel. Don\'t send messages in this channel! The board will get buried.');
+        game.updateBoardMessage();
+      }
+    }
+  });
+  commands.set('unredact', {
+    description: 'Notify players of the rule book being unredacted.',
+    display: false,
+    requiresStart: false,
+    action: (message, args) => {
+      if(message.author.id === me) {
+        game.primaryChannel.send('A section of the rulebook has been unredacted.');
+        game.log('A passage has been revealed', 'management')
+      }
+    }
+  });
+  commands.set('sendDM', {
+    description: 'Speak through me',
+    display: false,
+    requiresStart: false,
+    action: (message, args) => {
+      if(message.author.id === me) {
+        message.client.users.fetch(args.shift()).then(user => {
+          sender.sendDM(user, `You've got an incoming message! I, uh, can't quite figure out where it's coming from though...\n\nMessage: ${args.join(' ')}`).catch(e => {
+            message.channel.send('Could not find DM');
+            console.log(e);
+          });
+        }).catch(e => {
+          message.channel.send('Could not resolve user');
+          console.log(e);
+        })
+      }
+    }
+  });
+  commands.set('mytank', {
+    description: 'Get info about your tank',
+    display: false,
+    requiresStart: true,
+    action: (message, args) => {
+      if(message.author.id !== me) return;
+
+      const tank = game.resolvePlayer(message.author).tank;
+      console.log(tank);
+      message.channel.send(`Your position: (${tank.loc.x + 1}, ${tank.loc.y + 1})`);
+    }
+  });
+  commands.set('giveap', {
+    display: false,
+    requiresStart: false,
+    action(message, args) {
+      if(message.author.id !== me) return;
+      const player = game.resolvePlayer(message.author);
+      if(player) {
+        if(!args.length) {
+          player.ap += 1;
+        } else {
+          if(args[0].startsWith('<@')) {
+            args[0] = args[0].slice(2);
+          }
+          if(args[0].startsWith('!')) {
+            args[0] = args[0].slice(1);
+          }
+          if(args[0].endsWith('>')) {
+            args[0] = args[0].slice(0, -1);
+          }
+          message.client.users.fetch(args[0]).then(u => {
+            const target = game.resolvePlayer(u);
+            if(target) {
+              if(args[1]) {
+                const value = parseInt(args[1]);
+                if(value) {
+                  target.ap += value;
+                } else {
+                  target.ap += 1;
+                }
+              } else {
+                target.ap += 1;
+              }
+            } else {
+              message.channel.send('Invalid target.');
+            }
+          });
+        }
+      } 
+    } 
+  });
+  commands.set('save', {
+    display: false,
+    requiresStart: true,
+    async action(message, args) {
+      if(!player.author.id === me) return;
+      await saveGame();
+    }
+  });
+  commands.set('unlockBarrier', {
+    display: false,
+    action(message, args) {
+      if(message.author.id !== me) return;
+
+      unlockBarriers();
+    }
+  });
+  
+
+  let questions = [
+      {
+        question: ['hi', 'hello', 'hey', 'sup', 'hii', 'heyy', 'hola', 'konnichiwa', 'こんにちは', 'marhaba', 'سلام', 'salam', 'مرحبا', 'السلام عليكم ', 'assalamu alaikum', 'alsalam ealaykum',
+                   'Բարեւ', 'barev', 'namaskar', 'salam',  'kaixo', 'добры дзень', 'dobry dzien', 'dobry dzień', 'হ্যালো', 'hyālō', 'hyalo', 'zdravo', 'Здравейте', 'zdraveite', 'Zdraveĭte',
+                   'kumusta', 'moni', '你好', 'ni hao', 'nǐ hǎo', 'bonghjornu', 'ahoj', 'hej', 'hallo', 'saluton', 'tere', 'kamusta', 'hei', 'bonjour', 'hoi', 'ola', 'გამარჯობა',
+                   'gamarjoba', 'γεια', 'geia', 'નમસ્તે', 'namaste', 'namastē', 'bonjou', 'barka dai', 'aloha', 'שלום', 'नमस्ते', 'nyob zoo', 'szia', 'halló', 'nnoo', 'nnọọ', 'halo',
+                   'dia dhuit', 'ciao', 'ಹಲೋ', 'Сәлеметсіз бе', 'sälemetsiz be', 'salemetsiz be', 'សួស្តី', 'suostei', 'mwaramutse', '안녕하세요', 'annyeonghaseyo' ],
+        answer(message) {
+          let response = this.question[Math.floor(Math.random() * this.question.length)];
+          response.replace(response.charAt(0), response.charAt(0).toUpperCase());
+          message.channel.send(response + '!');
+        }
+      },
+      {
+        question: ['who are you', 'whore you', `who're you`],
+        asked: [],
+        answer: message => {
+          message.channel.send(`I'm Goatboy! Performing my duty and providing you with the tools nessecary to access Clanks!`);
+        } 
+      },
+      {
+        question: ['are you happy'],
+        asked: [],
+        answer: message => {
+          message.channel.send(`Oh, uh, I guess?`);
+        } 
+      },
+      {
+        question: ['are you lonely'],
+        asked: [],
+        answer: message => {
+          message.channel.send(`Not while the game is active.`);
+        }
+      },
+      {
+        question: ['do you want to leave', 'do you wish to leave'],
+        asked: new Map(),
+        async answer(message) {
+          if(!this.asked.has(message.author.id)) {
+            this.asked.set(message.author.id, {
+              author: message.author,
+              answered: false,
+            })
+          }
+          const info = this.asked.get(message.author.id);
+          if(!info.answered) {
+            const player = game.resolvePlayer(info.author);
+            message.channel.send(`Where would I go?`);
+            if(player?.divineRoll()) {
+              await new Promise(r => setTimeout(r, 2000));
+              message.channel.send('Maybe. After the game. When the machinery stops.');
+              info.answered = true;
+            } 
+          } else {
+            message.channel.send('It gets awfully quiet...');
+          }
+        }
+      },
+      {
+        question: ['who made you'],
+        asked: [],
+        async answer(message) {
+          message.channel.send(`I uh...`);
+          await new Promise(r => setTimeout(r, 1000));
+          message.channel.startTyping(1);
+          await new Promise(r => setTimeout(r, 20000));
+          message.channel.stopTyping(1);
+          await new Promise(r => setTimeout(r, 10000));
+          message.channel.startTyping(1);
+          await new Promise(r => setTimeout(r, 29000));
+          message.channel.stopTyping(1);
+          await new Promise(r => setTimeout(r, 5000));
+          message.channel.send(`Let's talk about something else...`);
+        }
+      },
+      {
+        question: ['how are you', 'howre you', `how're you`],
+        asked: [],
+        answer: message => {
+          message.channel.send(`Oh! Incredible! I love running this game, thanks for asking!`);
+        }
+      },
+      {
+        question: ['what is your favorite color', `what's your favorite color`, 'whats your favorite color',
+                   'what is your favourite color', `what's your favourite color`, 'whats your favourite color',
+                   'what is your favorite colour', `what's your favorite colour`, 'whats your favorite colour',
+                   'what is your favourite colour', `what's your favourite colour`, 'whats your favourite colour'],
+        asked: [],
+        answer(message) {
+          if(roles[message.author.id]) {
+            message.channel.send(`Oh, um... probably... ${message.client.guilds.resolve(ono).roles.resolve(role[message.author.id]).color}! I hope that's not too specific...`);
+          } else {
+            message.channel.send(`Oh, um... probably... gray! Gray is pretty nice.`);
+          }
+        }
+      },
+      {
+        question: ['where are we', `where're we`, 'wherere we',
+                   'where am i'],
+        asked: new Map(),
+        answer(message) {
+          if(!this.asked.has(message.author.id)) {
+            this.asked.set(message.author.id, {
+              author: message.author,
+              answered: false,
+            });
+          }
+          const info = this.asked.get(message.author.id);
+          const player = game.resolvePlayer(message.author);
+          if(!info.answered) {
+            if(player?.divineRoll()) {
+              message.channel.send(`The Play Box, of course!`);
+              info.answered = true;
+            } else {
+              message.channel.send(`That's a pretty strange question to ask me, don't you think?`);
+            }
+          } else {
+            message.channel.send(`The Play Box, did you forget?`);
+          }
+        }
+      },
+      {
+        question: ['where are you', `where're you`, `wherere you`],
+        asked: new Map(),
+        inside: false,
+        globalAnswered: false,
+        answer(message) {
+          if(!this.asked.has(message.author.id)) {
+            this.asked.set(message.author.id, {
+              author: message.author,
+              answered: false,
+            })
+          }
+  
+          const info = this.asked.get(message.author.id);
+          const player = game.resolvePlayer(message.author);
+          if(!info.answered) {
+            if(player?.divineRoll()) {
+              if(this.globalAnswered && !this.inside) {
+                message.channel.send(`Below the Play Box.`);
+              } else {
+                message.channel.send(`In the Machinery.`);
+              }
+              info.answered = true;
+            } else {
+              message.channel.send(`With you, silly!`);
+            }
+          } else {
+            confirm(message.channel, `Well, more like a part of? Can you be in something you are? Would you say your brain is in you?`, true).then(result => {
+              if(result) {
+                message.channel.send(`Then yeah! Inside!`);
+              } else {
+                message.channel.send(`Yeah, that makes sense, I think. I'm not the Machinery, but it's kinda of me.`);
+              }
+            });
+          }
+        }
+      },
+      {
+        question: ['do you like the quiet', 'do you like the silence', 'do you like silence', 'do you want silence', 'how is the quiet', 'how is the silence'],
+        asked: new Map(),
+        async answer(message) {
+          if(!this.asked.has(message.author.id)) {
+            this.asked.set(message.author.id, {
+              author: message.author,
+              answered: false,
+            });
+          }
+  
+          const info = this.asked.get(message.author.id);
+          const player = game.resolvePlayer(message.author);
+          if(player?.divineRoll() || this.globalAnswered) {
+            this.globalAnswered = true;
+            message.channel.send('No');
+            message.channel.send(`Well, I did, for a while, but then it became too much. But now it\'s gone!${game.hasSpecialAmmo ? ' I just fear it might be getting too loud... Anyway, ' : ''} Thanks for being here.`);
+          } else {
+            message.channel.send('I... did.');
+            message.channel.startTyping();
+            await new Promise(r => setTimeout(r, 5000));
+            message.channel.stopTyping();
+          }
+        }
+      },
+      {
+        question: ['do you like quiet', 'do you want quiet'],
+        asked: new Map(),
+        async answer(message) {
+          if(!this.asked.has(message.author.id)) {
+            this.asked.set(message.author.id, {
+              author: message.author,
+              answered: false,
+            });
+          }
+  
+          const info = this.asked.get(message.author.id);
+          const player = game.resolvePlayer(message.author);
+          if(info.answered && player?.goatTrust) {
+            message.channel.send(`I don't want the game taken away from me. Please don't let that happen.`);
+          } else if(player?.divineRoll(-10)) {
+            if(player?.divineRoll(-3)) {
+              message.channel.send(`I- well...`);
+              await new Promise(r => setTimeout(r, 10000));
+              confirm(message.channel, `I... I can trust you, right?`, true).then(result => {
+                if(result) {
+                  info.goatTrust = true;
+                  message.channel.send(`The Machinery. It likes quiet. If it-`);
+                  message.channel.send(`I want the game to continue. The silence wasn't fun!`);
+                  confirm(message.channel, `I know you are just a Player, but you like playing, don't you?`, true).then(result => {
+                    if(result) {
+                      message.channel.send(`So please! Let's keep playing.`);
+                      sender.sendDM(me, `${player.author} said they like playing :D`);
+                    } else {
+                      message.channel.send('oh.');
+                      info.goatTrust = false;
+                      sender.sendDM(me, `${player.author} said they don't like playing!`);
+                    }
+                  });
+                } else {
+                  info.goatTrust = false;
+                  message.channel.send(`Is that so.`);
+                  player.divineFavor -= 5;
+                  game.log('The heavens shifted.', 'divine');
+                  info.quietFavor += 5;
+                  if(!player.divineRoll()) {
+                    player.ap -= 3;
+                    game.loggingChannel.send(`${player} spent 3AP to shoot themself in the foot.`);
+                  }
+                }
+              });
+            } else {
+              message.channel.send(`quiet is fine, I guess.`);
+            }
+          }
+        }
+      },
+      {
+        question: ['who is quiet', 'who\'s quiet', 'whos quiet'],
+        answer(message) {
+          const player = game.resolvePlayer(message.author);
+          if(player.divinityLevel === 'entry') {
+            message.channel.send('A member of The Divinity.');
+          } else {
+            message.channel.send(`Don't you mean *what* is quiet?`);
+          }
+        }
+      },
+      {
+        question: ['who is loud', 'who\'s loud', 'whos loud'],
+        answer(message) {
+          const player = game.resolvePlayer(message.author);
+          if(player.divinityLevel === 'entry') {
+            message.channel.send('The Divinity has requested all information about Loud be classified.');
+          } else {
+            message.channel.send(`Don't you meant *what* is loud?`);
+          }
+        }
+      },
+      {
+        question: ['what is the divinity', 'what\'s the divinity'],
+        scolded: false,
+        answer(message) {
+          const player = game.resolvePlayer(message.author);
+          if(player?.divinityLevel === 'entry') {
+            message.channel.send('The Divinity is the collection of people that oversee the smooth operation of The Machinery');
+          } else {
+            const divine = game.players.find(p => p.divinityLevel !== 'restricted');
+            if(divine && !this.scolded) {
+              this.scolded = true;
+              message.channel.send('I have no idea what you are talking about, where did you hear about that?');
+              sender.sendDM(divine.author, `Why did you tell ${message.author} about The Divinity. I thought I told you it is highly discouraged. The affairs of The Divinity should not overlap with the affairs of Clanks.`);
+            } else if (this.scolded) {
+              message.channel.send(`I would appreciate it if you didn't ask me useless questions. I'm quite busy.`);
+            }
+          }
+        }
+      }
+  ];
+
+  
+
+  return {
+    name: 'clanks',
+    description: 'The home command of the game Tank Tactics',
+    options: [{
+      name: 'player',
+
+    }],
+    aliases: ['c'],
+    usage: ['start'],
+    args: true,
+    async execute(message, args) {
+      if(message.channel.type === 'dm' && question) {
+        question.answer(message);
+      } else {
+        if(commands.has(args[0])) {
+          const command = commands.get(args.shift());
+          const player = game.resolvePlayer(message.author);
+          if(command.requiresStart && game.state === 'sleep') {
+            message.channel.send('Sorry, but a game needs to be active for that command to work.');
+          } else if(command.requiresAlive && !player?.alive) {
+            message.channel.send(`Sorry, but you need to be alive to use this command.`);
+          } else {
+            command.action(message, args);
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,102 @@
+
+const { MessageMenu, MessageButton, MessageMenuOption, MessageActionRow } = require('discord.js');
+
+module.exports = (index) => {
+    index.btnHandler.add('add set', e => {
+        e.channel.send('Please type the set in a new message using the form: [subject]/[object]/[possessive]\nEx: they/them/theirs');
+        const prnForm = /^[A-z]+\/[A-z]+\/[A-z]+$/gi;
+        e.channel.awaitMessages(
+            m => m.author.id === e.clicker.id && prnForm.test(m.content),
+            { max: 1, time: 10000, errors: ['time'] }
+        ).then(collection => {
+            let set = collection.first().content.trim().toLowerCase();
+            if(set.split('/').length !== 3) {
+                e.channel.send('The set is illformated.');
+            } else {
+                e.guild.roles.create(
+                    {data: { name: set }, 
+                    reason: `${e.clicker.member} requested a new pronoun set.`}
+                )
+                .then(role => {
+                    e.clicker.member.roles.add(role);
+                    prn.users[e.clicker.id] = role.id;
+                    prn.roles[set] = role.id;
+
+                    fs.writeFileSync('pronouns.json', JSON.stringify(prn));
+
+                    e.channel.send(`Role for ${set} has been successfully created!`);
+                })
+                .catch(err => console.log(err));
+            }
+        }).catch(err => console.log(err));
+    });
+    return {
+        name: 'pronouns',
+        aliases: ['identity'],
+        cooldown: 1,
+        description: 'Edit your pronoun roles',
+        pagable: false,
+        usage: '',
+        execute(message, args) {
+            let prn = require('../pronouns.json');
+            if(args.length === 0) {
+                message.channel.send(`Your current set pronouns are: ${prn.users[message.author.id].join(' ')}`);
+                return;
+            }
+            if(args[0] === 'add') {
+                let theyOption = new MessageMenuOption()
+                    .setLabel('they/them/their')
+                    .setValue(prn.roles['they/them/theirs']);
+        
+                let select = new MessageMenu()
+                    .setID('Add pronoun set')
+                    .setPlaceholder('Pronoun sets')
+                    .setMaxValues(1)
+                    .setMinValues(1)
+                    .addOption(theyOption);
+                    
+                Object.keys(prn.roles).forEach(set => {
+                    if(set !== 'they/them/their') {
+                        let option = new MessageMenuOption()
+                        .setLabel(set)
+                        .setValue(prn.roles[set]);
+        
+                        select.addOption(option);
+                    }
+                    
+                });
+        
+                let btn = new MessageButton()
+                    .setStyle('red')
+                    .setLabel('Add new set')
+                    .setID('add set');
+        
+                message.channel.send('Select the set you\'d like to add:', select)
+                .then(_ => message.channel.send('Or click this button to add a new set', btn));
+            } else if (args[0] === 'remove') {
+                let theyOption = new MessageMenuOption()
+                .setLabel('they/them/their')
+                .setValue(prn.roles['they/them/theirs']);
+
+                let select = new MessageMenu()
+                    .setID('Add pronoun set')
+                    .setPlaceholder('Pronoun sets')
+                    .setMaxValues(1)
+                    .setMinValues(1)
+                    .addOption(theyOption);
+                    
+                Object.keys(prn.roles).forEach(set => {
+                    if(set !== 'they/them/their') {
+                        let option = new MessageMenuOption()
+                        .setLabel(set)
+                        .setValue(prn.roles[set]);
+
+                        select.addOption(option);
+                    }
+                });
+
+                message.channel.send('Select the set to remove:', select)
+            }
+        }
+    }
+}

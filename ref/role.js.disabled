@@ -1,0 +1,121 @@
+let roles = require('../roles.json');
+module.exports = () => {
+    return {
+        name: 'role',
+        cooldown: 1,
+        description: 'Edit your custom role!',
+        pagable: false,
+        usage: ['create <name> [color]', 'setName <new name>', 'setColor <new color>'],
+        execute(message, args) {
+            for(let i = 0; i < roles.length; i++) {
+                console.log(`${roles[i]},`);
+            }
+            let ownerId = message.author.id;
+            let role = message.guild.roles.cache.find(role => role.id ===  roles[ownerId]);
+            if(!args.length) {
+                console.log('no args');
+                if(role === undefined) {
+                    message.reply('You currently don\'t have a custom role set up');
+                }
+                else {
+                    message.channel.send(`You're current role is: <@&${role.id}>`);
+                }
+            } else {
+                console.log(`There are ${args.length} args!`);
+                if(args.length > 1) {
+                    switch (args[0]) {
+                        case 'setName':
+                            if(role !== undefined) {
+                                let name = '';
+                                for(let i = 1; i < args.length; i++) {
+                                    name += args[i] + " ";
+                                }
+                                role.setName(name.substring(0, name.length - 1))
+                                    .then(message.channel.send(`Updated name: ${role}`))
+                                    .catch(e => {
+                                        message.channel.send('Sorry, I couldn\'t set your name. Try again or contact quiet');
+                                        console.log(e);
+                                    });
+                            } else {
+                                message.reply('Hey, wait a minute, you don\'t have a role yet! Use `~role create <name> [color]` to create a new role');
+                            }
+                            break;
+                        case 'setColor':
+                            if(role !== undefined) {
+                                role.setColor(args[1])
+                                    .then(message.channel.send(`Updated color: ${role}`))
+                                    .catch(e => {
+                                        message.channel.send('Sorry, I couldn\'t set your color. Try again or contact quiet');
+                                        console.log(e);
+                                    });
+                            } else {
+                                message.reply('Hey, wait a minute, you don\'t have a role yet! Use `~role create <name> [color]` to create a new role');
+                            }
+                            break;
+                        case 'create':
+                            let name = "";
+                            for(let i = 1; i < args.length - 1; i++) {
+                                name += `${args[i]} `
+                            }
+                            let color = args[args.length - 1];
+                            if(role !== undefined) {
+                                role.setName(name)
+                                    .then(_ => role.setColor(color))
+                                    .then(_ => message.reply(`Your role has successfully been updated: ${role}`))
+                                    .catch(e => {
+                                        message.channel.send('Something went wrong. Try again or contact quiet.');
+                                        console.log(e);
+                                    });
+                            }
+                            else {
+                                message.guild.roles.create(
+                                        {data: {name: name, color: color}, 
+                                        reason: `${message.author} requested a custom role.`}
+                                    )
+                                    .then(role => addRole(role))
+                                    .catch(console.log('uh-oh, something went wrong'));
+                            }
+                            break;
+                    }
+                } else if (args[0] === 'delete') {
+                    if(role === undefined) {
+                        message.reply('Can\'t delete what doesn\'t exist!');
+                    } else {
+                        message.member.roles.remove(role, `${message.author} requested their custom role be removed.`)
+                        .then(_ => role.delete())
+                        .then(_ => message.reply('Your role has been deleted!'))
+                        .catch(_ => message.reply('Something went wrong, yell at quiet.'));
+                    }
+                } else {
+                    message.reply('Sorry, I need more information than that to complete your request. Use `~help role` for more information.')
+                }
+            }
+
+            function parseName(argsIndex) {
+                let name = '';
+                for(; true; argsIndex++) {
+                    let string = args[argsIndex];
+                    if(string.charAt(0) === '\'') {
+                        string = string.substring(1);
+                    } else if(string.charAt(string.length - 1) === '\'') {
+                        name += string.substring(0, string.length - 1);
+                        break;
+                    } else {
+                        name += string + " ";
+                    }
+                }
+                return [name, argsIndex];
+            }
+
+            function addRole(role) {
+                message.member.roles.add(role);
+                roles[ownerId] = role.id;
+
+                const fs = require('fs');
+                fs.writeFileSync('roles.json', JSON.stringify(roles));
+
+                message.reply(`Role created! ${role}`);
+            }
+        }
+    }
+}

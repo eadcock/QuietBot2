@@ -1,0 +1,12 @@
+let roles = require('../roles.json');
+module.exports = () => {
+    return {
+        name: 'me',
+        cooldown: 1,
+        description: 'Get information about yourself',
+        pagable: false,
+        execute(message, args) {
+            message.reply('Your id: ' + message.author.id);
+        }
+    }
+}
